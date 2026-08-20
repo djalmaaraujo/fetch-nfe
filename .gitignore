@@ -1,0 +1,14 @@
+# Segredos e certificado — NUNCA versionar
+.env
+cert-pw.txt
+certs/
+*.pfx
+*.p12
+
+# Dados fiscais baixados e estado
+data/
+state/
+
+# Python
+__pycache__/
+*.pyc

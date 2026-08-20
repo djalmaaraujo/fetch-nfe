@@ -1,0 +1,29 @@
+services:
+  # API HTTP: dispara sincronização e consulta/baixa por data
+  api:
+    build: .
+    image: nfe-download
+    container_name: nfe-download-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./certs:/certs:ro
+      - ./data:/data
+      - ./state:/state
+
+  # Rotina agendada: baixa as notas recebidas de tempos em tempos (cron interno)
+  rotina:
+    build: .
+    image: nfe-download
+    container_name: nfe-download-rotina
+    restart: unless-stopped
+    command: ["python", "-m", "app.scheduler"]
+    env_file:
+      - .env
+    volumes:
+      - ./certs:/certs:ro
+      - ./data:/data
+      - ./state:/state

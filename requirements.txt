@@ -1,0 +1,12 @@
+# Núcleo fiscal: comunicação NFeDistribuicaoDFe + assinatura + manifestação.
+# A PyNFe 0.6.5 não declara todas as deps no wheel publicado, então pinamos aqui.
+pynfe==0.6.5
+signxml>=4.1.0
+lxml>=5.4.0
+pyopenssl>=25.1.0
+cryptography>=43.0.3
+requests>=2.32
+
+# API
+fastapi>=0.115
+uvicorn[standard]>=0.30
