@@ -1,26 +1,27 @@
 services:
-  # API HTTP: dispara sincronização e consulta/baixa por data
+  # API HTTP: cadastro de empresas/certificados, sincronização e consulta por data
   api:
     build: .
-    image: nfe-download
-    container_name: nfe-download-api
+    image: fetch-nfe
+    container_name: fetch-nfe-api
     restart: unless-stopped
     env_file:
       - .env
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
-      - ./certs:/certs:ro
+      # rw: a API grava os .pfx enviados no cadastro
+      - ./certs:/certs
       - ./data:/data
       - ./state:/state
 
-  # Rotina agendada: baixa as notas recebidas de tempos em tempos (cron interno)
-  rotina:
+  # Workers: scheduler (sincroniza todas as empresas em paralelo) + fila de manifestação
+  worker:
     build: .
-    image: nfe-download
-    container_name: nfe-download-rotina
+    image: fetch-nfe
+    container_name: fetch-nfe-worker
     restart: unless-stopped
-    command: ["python", "-m", "app.scheduler"]
+    command: ["python", "-m", "app.workers"]
     env_file:
       - .env
     volumes:

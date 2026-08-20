@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Índice SQLite das notas: dedup por chave, estado (NSU) e consulta por data."""
+"""Banco SQLite: empresas, notas (dedup por empresa), fila de manifestação e locks.
+
+Concorrência: WAL + busy timeout aguentam bem API + workers no mesmo arquivo.
+O lock de sincronização é POR EMPRESA (arquivo em locks/), então várias empresas
+sincronizam em paralelo sem nunca duplicar consulta pro mesmo CNPJ.
+"""
 import contextlib
 import fcntl
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import config
+
+
+def _agora() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _conn() -> sqlite3.Connection:
@@ -14,102 +23,232 @@ def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(config.DB_PATH, timeout=30, check_same_thread=False)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=30000")
     return c
 
 
 def init() -> None:
     with _conn() as c:
         c.execute(
+            """CREATE TABLE IF NOT EXISTS empresas (
+                   cnpj          TEXT PRIMARY KEY,
+                   razao_social  TEXT,
+                   nome_fantasia TEXT,
+                   uf            TEXT NOT NULL,
+                   municipio     TEXT,
+                   cert_path     TEXT NOT NULL,
+                   cert_senha    TEXT NOT NULL,
+                   cert_validade TEXT,
+                   manifestar    INTEGER DEFAULT 1,
+                   ativo         INTEGER DEFAULT 1,
+                   ultimo_nsu    INTEGER DEFAULT 0,
+                   ultima_sincronizacao TEXT,
+                   ultimo_resultado     TEXT,
+                   criado_em     TEXT
+               )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS fila_manifestacao (
+                   id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                   cnpj_empresa TEXT NOT NULL,
+                   chave        TEXT NOT NULL,
+                   status       TEXT DEFAULT 'pendente',  -- pendente|processando|ok|erro
+                   tentativas   INTEGER DEFAULT 0,
+                   ultimo_erro  TEXT,
+                   criado_em    TEXT,
+                   atualizado_em TEXT,
+                   UNIQUE (cnpj_empresa, chave)
+               )"""
+        )
+        c.execute("CREATE TABLE IF NOT EXISTS estado (chave TEXT PRIMARY KEY, valor TEXT)")
+    # Migra o esquema single-empresa (se houver) ANTES de criar a tabela nova
+    _migrar_v1()
+    with _conn() as c:
+        c.execute(
             """CREATE TABLE IF NOT EXISTS notas (
-                   chave       TEXT PRIMARY KEY,
+                   cnpj_empresa TEXT NOT NULL,
+                   chave       TEXT NOT NULL,
                    tipo        TEXT,            -- completa | resumo
                    dh_emi      TEXT,
-                   data_emi    TEXT,            -- AAAA-MM-DD (índice por data)
+                   data_emi    TEXT,            -- AAAA-MM-DD
                    nsu         INTEGER,
                    emitente    TEXT,
                    valor       TEXT,
                    caminho     TEXT,
                    manifestada INTEGER DEFAULT 0,
-                   baixado_em  TEXT
+                   baixado_em  TEXT,
+                   PRIMARY KEY (cnpj_empresa, chave)
                )"""
         )
-        c.execute("CREATE INDEX IF NOT EXISTS ix_data ON notas(data_emi)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_notas_data ON notas(cnpj_empresa, data_emi)")
+    # Banco guarda senha de certificado: restringe leitura ao dono
+    with contextlib.suppress(OSError):
+        os.chmod(config.DB_PATH, 0o600)
+
+
+# --------------------------------------------------------------------------- #
+# Migração do esquema single-empresa (v1): notas sem cnpj_empresa
+# --------------------------------------------------------------------------- #
+def _migrar_v1() -> None:
+    with _conn() as c:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(notas)")]
+        if not cols or "cnpj_empresa" in cols:
+            return  # banco novo, ou já está no esquema v2
+    cnpj = config.SEED_CNPJ
+    if not cnpj:
+        raise RuntimeError(
+            "Banco no formato antigo (single-empresa) e sem CNPJ no .env para migrar."
+        )
+    with _conn() as c:
+        c.execute("ALTER TABLE notas RENAME TO notas_v1")
         c.execute(
-            "CREATE TABLE IF NOT EXISTS estado (chave TEXT PRIMARY KEY, valor TEXT)"
+            """CREATE TABLE notas (
+                   cnpj_empresa TEXT NOT NULL, chave TEXT NOT NULL, tipo TEXT,
+                   dh_emi TEXT, data_emi TEXT, nsu INTEGER, emitente TEXT,
+                   valor TEXT, caminho TEXT, manifestada INTEGER DEFAULT 0,
+                   baixado_em TEXT, PRIMARY KEY (cnpj_empresa, chave))"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS ix_notas_data ON notas(cnpj_empresa, data_emi)")
+        c.execute(
+            """INSERT INTO notas
+               SELECT ?, chave, tipo, dh_emi, data_emi, nsu, emitente, valor,
+                      REPLACE(caminho, ?, ?), manifestada, baixado_em
+               FROM notas_v1""",
+            (cnpj, config.DATA_DIR + "/", f"{config.DATA_DIR}/{cnpj}/"),
+        )
+        c.execute("DROP TABLE notas_v1")
+    # Move os arquivos no disco: /data/fiscal/<data|_*>/ -> /data/fiscal/<cnpj>/...
+    destino_raiz = os.path.join(config.DATA_DIR, cnpj)
+    os.makedirs(destino_raiz, exist_ok=True)
+    for nome in os.listdir(config.DATA_DIR):
+        origem = os.path.join(config.DATA_DIR, nome)
+        if nome == cnpj or not os.path.isdir(origem):
+            continue
+        os.rename(origem, os.path.join(destino_raiz, nome))
+
+
+# --------------------------------------------------------------------------- #
+# Empresas
+# --------------------------------------------------------------------------- #
+_CAMPOS_EMPRESA_PUBLICOS = (
+    "cnpj, razao_social, nome_fantasia, uf, municipio, cert_path, cert_validade, "
+    "manifestar, ativo, ultimo_nsu, ultima_sincronizacao, ultimo_resultado, criado_em"
+)
+
+
+def upsert_empresa(dados: dict) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO empresas
+               (cnpj, razao_social, nome_fantasia, uf, municipio, cert_path,
+                cert_senha, cert_validade, manifestar, ativo, ultimo_nsu, criado_em)
+               VALUES (:cnpj, :razao_social, :nome_fantasia, :uf, :municipio,
+                       :cert_path, :cert_senha, :cert_validade, :manifestar, 1,
+                       COALESCE(:ultimo_nsu, 0), :criado_em)
+               ON CONFLICT(cnpj) DO UPDATE SET
+                   razao_social=excluded.razao_social,
+                   nome_fantasia=excluded.nome_fantasia,
+                   uf=excluded.uf, municipio=excluded.municipio,
+                   cert_path=excluded.cert_path, cert_senha=excluded.cert_senha,
+                   cert_validade=excluded.cert_validade,
+                   manifestar=excluded.manifestar, ativo=1""",
+            {"criado_em": _agora(), "ultimo_nsu": None, **dados},
+        )
+
+
+def get_empresa(cnpj: str, com_senha: bool = False):
+    campos = _CAMPOS_EMPRESA_PUBLICOS + (", cert_senha" if com_senha else "")
+    with _conn() as c:
+        r = c.execute(f"SELECT {campos} FROM empresas WHERE cnpj=?", (cnpj,)).fetchone()
+        return dict(r) if r else None
+
+
+def listar_empresas(somente_ativas: bool = False) -> list:
+    q = f"SELECT {_CAMPOS_EMPRESA_PUBLICOS} FROM empresas"
+    if somente_ativas:
+        q += " WHERE ativo=1"
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q + " ORDER BY cnpj").fetchall()]
+
+
+def atualizar_empresa(cnpj: str, campos: dict) -> bool:
+    permitidos = {"manifestar", "ativo", "cert_senha", "uf"}
+    sets = {k: v for k, v in campos.items() if k in permitidos}
+    if not sets:
+        return False
+    frag = ", ".join(f"{k}=?" for k in sets)
+    with _conn() as c:
+        cur = c.execute(f"UPDATE empresas SET {frag} WHERE cnpj=?", (*sets.values(), cnpj))
+        return cur.rowcount > 0
+
+
+def set_ultimo_nsu(cnpj: str, nsu: int) -> None:
+    with _conn() as c:
+        c.execute("UPDATE empresas SET ultimo_nsu=? WHERE cnpj=?", (int(nsu), cnpj))
+
+
+def registrar_sincronizacao(cnpj: str, resultado: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE empresas SET ultima_sincronizacao=?, ultimo_resultado=? WHERE cnpj=?",
+            (_agora(), resultado, cnpj),
         )
 
 
 # --------------------------------------------------------------------------- #
-# Estado (NSU, última sincronização)
+# Notas (dedup por empresa)
 # --------------------------------------------------------------------------- #
-def get_estado(chave: str, padrao=None):
+def ja_tem_completa(cnpj: str, chave: str) -> bool:
     with _conn() as c:
-        r = c.execute("SELECT valor FROM estado WHERE chave=?", (chave,)).fetchone()
-        return r["valor"] if r else padrao
+        return c.execute(
+            "SELECT 1 FROM notas WHERE cnpj_empresa=? AND chave=? AND tipo='completa'",
+            (cnpj, chave),
+        ).fetchone() is not None
 
 
-def set_estado(chave: str, valor) -> None:
+def manifestada(cnpj: str, chave: str) -> bool:
+    with _conn() as c:
+        return c.execute(
+            "SELECT 1 FROM notas WHERE cnpj_empresa=? AND chave=? AND manifestada=1",
+            (cnpj, chave),
+        ).fetchone() is not None
+
+
+def marcar_manifestada(cnpj: str, chave: str) -> None:
     with _conn() as c:
         c.execute(
-            "INSERT INTO estado(chave,valor) VALUES(?,?) "
-            "ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
-            (chave, str(valor)),
+            "UPDATE notas SET manifestada=1 WHERE cnpj_empresa=? AND chave=?", (cnpj, chave)
         )
 
 
-def ultimo_nsu() -> int:
-    try:
-        return int(get_estado("ultimo_nsu", "0"))
-    except ValueError:
-        return 0
-
-
-# --------------------------------------------------------------------------- #
-# Notas (dedup + upsert)
-# --------------------------------------------------------------------------- #
-def ja_tem_completa(chave: str) -> bool:
-    with _conn() as c:
-        r = c.execute(
-            "SELECT tipo FROM notas WHERE chave=? AND tipo='completa'", (chave,)
-        ).fetchone()
-        return r is not None
-
-
-def manifestada(chave: str) -> bool:
-    with _conn() as c:
-        r = c.execute(
-            "SELECT manifestada FROM notas WHERE chave=? AND manifestada=1", (chave,)
-        ).fetchone()
-        return r is not None
-
-
-def marcar_manifestada(chave: str) -> None:
-    with _conn() as c:
-        c.execute("UPDATE notas SET manifestada=1 WHERE chave=?", (chave,))
-
-
-def upsert_nota(chave, tipo, dh_emi, nsu, emitente, valor, caminho) -> None:
-    """Insere ou atualiza. 'completa' sempre sobrepõe 'resumo' da mesma chave."""
+def upsert_nota(cnpj, chave, tipo, dh_emi, nsu, emitente, valor, caminho) -> None:
+    """Insere/atualiza. 'completa' nunca é rebaixada para 'resumo'."""
     data_emi = (dh_emi or "")[:10]
-    agora = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     with _conn() as c:
-        atual = c.execute("SELECT tipo FROM notas WHERE chave=?", (chave,)).fetchone()
+        atual = c.execute(
+            "SELECT tipo FROM notas WHERE cnpj_empresa=? AND chave=?", (cnpj, chave)
+        ).fetchone()
         if atual and atual["tipo"] == "completa" and tipo == "resumo":
-            return  # não rebaixa uma completa para resumo
+            return
         c.execute(
-            """INSERT INTO notas(chave,tipo,dh_emi,data_emi,nsu,emitente,valor,caminho,baixado_em)
-               VALUES(?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(chave) DO UPDATE SET
-                   tipo=excluded.tipo, dh_emi=excluded.dh_emi, data_emi=excluded.data_emi,
-                   nsu=excluded.nsu, emitente=excluded.emitente, valor=excluded.valor,
+            """INSERT INTO notas(cnpj_empresa,chave,tipo,dh_emi,data_emi,nsu,
+                                 emitente,valor,caminho,baixado_em)
+               VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(cnpj_empresa,chave) DO UPDATE SET
+                   tipo=excluded.tipo, dh_emi=excluded.dh_emi,
+                   data_emi=excluded.data_emi, nsu=excluded.nsu,
+                   emitente=excluded.emitente, valor=excluded.valor,
                    caminho=excluded.caminho, baixado_em=excluded.baixado_em""",
-            (chave, tipo, dh_emi, data_emi, nsu, emitente, valor, caminho, agora),
+            (cnpj, chave, tipo, dh_emi, data_emi, nsu, emitente, valor, caminho, _agora()),
         )
 
 
-def notas_periodo(de: str = None, ate: str = None, tipo: str = None) -> list:
-    q = "SELECT chave,tipo,dh_emi,data_emi,nsu,emitente,valor,caminho,manifestada,baixado_em FROM notas WHERE 1=1"
+def notas_periodo(cnpj=None, de=None, ate=None, tipo=None) -> list:
+    q = ("SELECT cnpj_empresa,chave,tipo,dh_emi,data_emi,nsu,emitente,valor,"
+         "caminho,manifestada,baixado_em FROM notas WHERE 1=1")
     p = []
+    if cnpj:
+        q += " AND cnpj_empresa=?"; p.append(cnpj)
     if de:
         q += " AND data_emi >= ?"; p.append(de)
     if ate:
@@ -121,33 +260,116 @@ def notas_periodo(de: str = None, ate: str = None, tipo: str = None) -> list:
         return [dict(r) for r in c.execute(q, p).fetchall()]
 
 
-def caminho_da_chave(chave: str):
+def caminho_da_chave(chave: str, cnpj: str = None):
+    q = "SELECT caminho FROM notas WHERE chave=?"
+    p = [chave]
+    if cnpj:
+        q += " AND cnpj_empresa=?"; p.append(cnpj)
     with _conn() as c:
-        r = c.execute("SELECT caminho FROM notas WHERE chave=?", (chave,)).fetchone()
+        r = c.execute(q, p).fetchone()
         return r["caminho"] if r else None
 
 
-def contagens() -> dict:
+def contagens(cnpj: str = None) -> dict:
+    filtro, p = ("WHERE cnpj_empresa=?", [cnpj]) if cnpj else ("", [])
     with _conn() as c:
-        total = c.execute("SELECT COUNT(*) n FROM notas").fetchone()["n"]
-        completas = c.execute(
-            "SELECT COUNT(*) n FROM notas WHERE tipo='completa'"
-        ).fetchone()["n"]
-        resumos = c.execute(
-            "SELECT COUNT(*) n FROM notas WHERE tipo='resumo'"
-        ).fetchone()["n"]
-    return {"total": total, "completas": completas, "resumos": resumos}
+        linha = c.execute(
+            f"""SELECT COUNT(*) total,
+                       SUM(tipo='completa') completas,
+                       SUM(tipo='resumo') resumos
+                FROM notas {filtro}""", p
+        ).fetchone()
+    return {k: linha[k] or 0 for k in ("total", "completas", "resumos")}
 
 
 # --------------------------------------------------------------------------- #
-# Lock entre processos (API x rotina) para não bater na SEFAZ em paralelo
+# Fila de manifestação
+# --------------------------------------------------------------------------- #
+def enfileirar_manifestacao(cnpj: str, chave: str) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO fila_manifestacao(cnpj_empresa,chave,criado_em,atualizado_em)
+               VALUES(?,?,?,?) ON CONFLICT(cnpj_empresa,chave) DO NOTHING""",
+            (cnpj, chave, _agora(), _agora()),
+        )
+
+
+def reivindicar_pendentes() -> dict:
+    """Marca como 'processando' os itens elegíveis e retorna {cnpj: [chaves]}.
+    Elegível = pendente cujo backoff exponencial (2^tentativas min) já venceu."""
+    agora = datetime.now(timezone.utc).astimezone()
+    por_empresa: dict = {}
+    with _conn() as c:
+        linhas = c.execute(
+            """SELECT id, cnpj_empresa, chave, tentativas, atualizado_em
+               FROM fila_manifestacao WHERE status='pendente' ORDER BY id"""
+        ).fetchall()
+        for r in linhas:
+            try:
+                base = datetime.fromisoformat(r["atualizado_em"])
+            except (TypeError, ValueError):
+                base = agora - timedelta(days=1)
+            if r["tentativas"] > 0 and agora < base + timedelta(minutes=2 ** r["tentativas"]):
+                continue  # ainda em backoff
+            c.execute(
+                "UPDATE fila_manifestacao SET status='processando', atualizado_em=? WHERE id=?",
+                (_agora(), r["id"]),
+            )
+            por_empresa.setdefault(r["cnpj_empresa"], []).append(r["chave"])
+    return por_empresa
+
+
+def concluir_manifestacao(cnpj: str, chave: str, ok: bool, erro: str = None) -> None:
+    with _conn() as c:
+        if ok:
+            c.execute(
+                """UPDATE fila_manifestacao SET status='ok', ultimo_erro=NULL,
+                       atualizado_em=? WHERE cnpj_empresa=? AND chave=?""",
+                (_agora(), cnpj, chave),
+            )
+        else:
+            c.execute(
+                f"""UPDATE fila_manifestacao SET
+                        tentativas=tentativas+1, ultimo_erro=?, atualizado_em=?,
+                        status=CASE WHEN tentativas+1 >= {config.FILA_MAX_TENTATIVAS}
+                                    THEN 'erro' ELSE 'pendente' END
+                    WHERE cnpj_empresa=? AND chave=?""",
+                ((erro or "")[:500], _agora(), cnpj, chave),
+            )
+
+
+def remover_da_fila(cnpj: str, chave: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM fila_manifestacao WHERE cnpj_empresa=? AND chave=?", (cnpj, chave)
+        )
+
+
+def fila_status() -> list:
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT cnpj_empresa, status, COUNT(*) itens
+               FROM fila_manifestacao GROUP BY cnpj_empresa, status
+               ORDER BY cnpj_empresa, status"""
+        ).fetchall()]
+
+
+def resetar_processando_orfaos() -> None:
+    """Na subida do worker: devolve pra fila itens presos em 'processando'
+    (processo anterior morreu no meio)."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE fila_manifestacao SET status='pendente' WHERE status='processando'"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Lock POR EMPRESA entre processos (API x workers)
 # --------------------------------------------------------------------------- #
 @contextlib.contextmanager
-def trava_sync(bloqueante: bool = False):
-    """Context manager. Levanta BlockingIOError se já houver sync em andamento
-    (quando bloqueante=False)."""
-    os.makedirs(config.STATE_DIR, exist_ok=True)
-    f = open(config.LOCK_PATH, "w")
+def trava_sync(cnpj: str, bloqueante: bool = False):
+    os.makedirs(config.LOCKS_DIR, exist_ok=True)
+    f = open(os.path.join(config.LOCKS_DIR, f"{cnpj}.lock"), "w")
     try:
         flags = fcntl.LOCK_EX if bloqueante else (fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(f, flags)
@@ -157,8 +379,9 @@ def trava_sync(bloqueante: bool = False):
         f.close()
 
 
-def sync_em_andamento() -> bool:
-    f = open(config.LOCK_PATH, "a")
+def sync_em_andamento(cnpj: str) -> bool:
+    os.makedirs(config.LOCKS_DIR, exist_ok=True)
+    f = open(os.path.join(config.LOCKS_DIR, f"{cnpj}.lock"), "a")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(f, fcntl.LOCK_UN)
