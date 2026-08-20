@@ -18,7 +18,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-from . import config, empresas, nfe, store
+from . import config, empresas, extrator, nfe, store
 
 TICK = 15  # segundos entre releituras da config da rotina
 
@@ -85,6 +85,8 @@ def main() -> None:
     store.init()
     empresas.seed_do_env()
     store.resetar_processando_orfaos()
+    # Indexa notas antigas (colunas de busca vazias) sem segurar a subida
+    threading.Thread(target=extrator.backfill, daemon=True, name="backfill").start()
 
     if config.INTERVALO <= 0:  # execução única
         sincronizar_todas()

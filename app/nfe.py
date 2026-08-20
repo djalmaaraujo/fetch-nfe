@@ -18,7 +18,7 @@ from pynfe.processamento.assinatura import AssinaturaA1
 from pynfe.entidades.evento import EventoManifestacaoDest
 from pynfe.entidades.fonte_dados import _fonte_dados
 
-from . import config, store
+from . import config, extrator, store
 
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
@@ -74,6 +74,7 @@ def _processar(emp: dict, inner, conteudo: bytes, nsu: str) -> None:
         valor = _texto(inner, "vNF") or ""
         caminho = _salvar_arquivo(cnpj, f"{data}/{chave}.xml", conteudo)
         store.upsert_nota(cnpj, chave, "completa", dh, int(nsu or 0), emit, valor, caminho)
+        extrator.extrair_e_indexar(cnpj, chave, inner, "completa")
         # Chegou a completa: manifestar não é mais necessário — sai da fila
         store.remover_da_fila(cnpj, chave)
         log(f"[{cnpj}]   NF-e completa: {data}/{chave} ({emit} R$ {valor})")
@@ -85,6 +86,8 @@ def _processar(emp: dict, inner, conteudo: bytes, nsu: str) -> None:
         valor = _texto(inner, "vNF") or ""
         caminho = _salvar_arquivo(cnpj, f"_resumos/{chave}.xml", conteudo)
         store.upsert_nota(cnpj, chave, "resumo", dh, int(nsu or 0), emit, valor, caminho)
+        if not store.ja_tem_completa(cnpj, chave):  # não sobrescrever índice da completa
+            extrator.extrair_e_indexar(cnpj, chave, inner, "resumo")
         # Dedup na origem: só entra na fila se ainda não temos a completa
         # nem manifestamos essa chave antes
         if emp["manifestar"] and not store.ja_tem_completa(cnpj, chave) \

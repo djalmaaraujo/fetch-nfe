@@ -81,6 +81,7 @@ def init() -> None:
                )"""
         )
         c.execute("CREATE INDEX IF NOT EXISTS ix_notas_data ON notas(cnpj_empresa, data_emi)")
+    _migrar_v3()
     # Banco guarda senha de certificado: restringe leitura ao dono
     with contextlib.suppress(OSError):
         os.chmod(config.DB_PATH, 0o600)
@@ -125,6 +126,206 @@ def _migrar_v1() -> None:
         if nome == cnpj or not os.path.isdir(origem):
             continue
         os.rename(origem, os.path.join(destino_raiz, nome))
+
+
+# --------------------------------------------------------------------------- #
+# Migração v3: campos de busca extraídos do XML + itens + duplicatas + FTS5
+# --------------------------------------------------------------------------- #
+FTS_OK = False
+
+_COLUNAS_V3 = [
+    ("emit_cnpj", "TEXT"), ("emit_nome", "TEXT"), ("emit_uf", "TEXT"),
+    ("dest_cnpj", "TEXT"), ("dest_nome", "TEXT"), ("dest_uf", "TEXT"),
+    ("nat_op", "TEXT"), ("nnf", "INTEGER"), ("serie", "TEXT"),
+    ("tp_nf", "INTEGER"), ("valor_num", "REAL"),
+]
+
+
+def _migrar_v3() -> None:
+    global FTS_OK
+    with _conn() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(notas)")}
+        for nome, tipo in _COLUNAS_V3:
+            if nome not in cols:
+                c.execute(f"ALTER TABLE notas ADD COLUMN {nome} {tipo}")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_notas_emit ON notas(emit_cnpj)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_notas_valor ON notas(valor_num)")
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS itens (
+                   cnpj_empresa TEXT NOT NULL, chave TEXT NOT NULL,
+                   n_item INTEGER, cprod TEXT, xprod TEXT, ncm TEXT, cfop TEXT,
+                   cean TEXT, ucom TEXT, qcom REAL, vprod REAL)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS ix_itens_nota ON itens(cnpj_empresa, chave)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_itens_ncm ON itens(ncm)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_itens_cfop ON itens(cfop)")
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS duplicatas (
+                   cnpj_empresa TEXT NOT NULL, chave TEXT NOT NULL,
+                   ndup TEXT, dvenc TEXT, vdup REAL)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS ix_dup_nota ON duplicatas(cnpj_empresa, chave)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_dup_venc ON duplicatas(dvenc)")
+        try:
+            c.execute(
+                """CREATE VIRTUAL TABLE IF NOT EXISTS notas_fts USING fts5(
+                       cnpj_empresa UNINDEXED, chave UNINDEXED, texto,
+                       tokenize='unicode61 remove_diacritics 2')"""
+            )
+            FTS_OK = True
+        except sqlite3.OperationalError:
+            FTS_OK = False  # SQLite sem FTS5: busca `q` cai pra LIKE
+
+
+def indexar_nota(cnpj: str, chave: str, ext: dict) -> None:
+    """Grava os campos extraídos do XML (colunas, itens, duplicatas, FTS)."""
+    campos = {k: v for k, v in ext.get("campos", {}).items() if v is not None}
+    with _conn() as c:
+        if campos:
+            frag = ", ".join(f"{k}=?" for k in campos)
+            c.execute(
+                f"UPDATE notas SET {frag} WHERE cnpj_empresa=? AND chave=?",
+                (*campos.values(), cnpj, chave),
+            )
+        c.execute("DELETE FROM itens WHERE cnpj_empresa=? AND chave=?", (cnpj, chave))
+        for i in ext.get("itens", []):
+            c.execute(
+                """INSERT INTO itens(cnpj_empresa,chave,n_item,cprod,xprod,ncm,
+                                     cfop,cean,ucom,qcom,vprod)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (cnpj, chave, i["n_item"], i["cprod"], i["xprod"], i["ncm"],
+                 i["cfop"], i["cean"], i["ucom"], i["qcom"], i["vprod"]),
+            )
+        c.execute("DELETE FROM duplicatas WHERE cnpj_empresa=? AND chave=?", (cnpj, chave))
+        for d in ext.get("duplicatas", []):
+            c.execute(
+                "INSERT INTO duplicatas(cnpj_empresa,chave,ndup,dvenc,vdup) VALUES(?,?,?,?,?)",
+                (cnpj, chave, d["ndup"], d["dvenc"], d["vdup"]),
+            )
+        if FTS_OK and ext.get("texto"):
+            c.execute("DELETE FROM notas_fts WHERE chave=? AND cnpj_empresa=?", (chave, cnpj))
+            c.execute(
+                "INSERT INTO notas_fts(cnpj_empresa,chave,texto) VALUES(?,?,?)",
+                (cnpj, chave, ext["texto"]),
+            )
+
+
+def notas_sem_indexacao(forcar: bool = False) -> list:
+    """Notas com XML no disco e campos de busca ainda vazios (ou todas, se forcar)."""
+    q = "SELECT cnpj_empresa, chave, tipo, caminho FROM notas"
+    if not forcar:
+        q += " WHERE emit_cnpj IS NULL"
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q).fetchall()]
+
+
+def _termos_fts(q: str) -> str:
+    """Sanitiza a consulta do usuário pro MATCH do FTS5 (cada termo entre aspas,
+    AND implícito)."""
+    import re as _re
+    termos = _re.findall(r"\w+", q, _re.UNICODE)
+    return " ".join(f'"{t}"' for t in termos)
+
+
+def buscar_notas(f: dict, limite: int = 50, offset: int = 0,
+                 ordenar: str = "data", ordem: str = "desc") -> dict:
+    """Busca com filtros combináveis. Filtros de item (produto/ncm/cfop/cean) e
+    de vencimento usam EXISTS nas tabelas satélites; `q` usa FTS5."""
+    cond, p = ["1=1"], []
+
+    def add(sql, *vals):
+        cond.append(sql)
+        p.extend(vals)
+
+    if f.get("cnpj"):
+        add("n.cnpj_empresa=?", f["cnpj"])
+    if f.get("de"):
+        add("n.data_emi>=?", f["de"])
+    if f.get("ate"):
+        add("n.data_emi<=?", f["ate"])
+    if f.get("tipo"):
+        add("n.tipo=?", f["tipo"])
+    if f.get("manifestada") is not None:
+        add("n.manifestada=?", int(f["manifestada"]))
+    if f.get("emitente"):
+        e = f["emitente"]
+        so_dig = "".join(ch for ch in e if ch.isdigit())
+        if len(so_dig) == 14:
+            add("n.emit_cnpj=?", so_dig)
+        else:
+            add("n.emit_nome LIKE ?", f"%{e}%")
+    if f.get("destinatario"):
+        d = f["destinatario"]
+        so_dig = "".join(ch for ch in d if ch.isdigit())
+        if len(so_dig) == 14:
+            add("n.dest_cnpj=?", so_dig)
+        else:
+            add("n.dest_nome LIKE ?", f"%{d}%")
+    if f.get("uf"):
+        add("n.emit_uf=?", f["uf"].upper())
+    if f.get("nnf") is not None:
+        add("n.nnf=?", int(f["nnf"]))
+    if f.get("serie"):
+        add("n.serie=?", str(f["serie"]))
+    if f.get("natop"):
+        add("n.nat_op LIKE ?", f"%{f['natop']}%")
+    if f.get("tp_nf") is not None:
+        add("n.tp_nf=?", int(f["tp_nf"]))
+    if f.get("valor_min") is not None:
+        add("n.valor_num>=?", float(f["valor_min"]))
+    if f.get("valor_max") is not None:
+        add("n.valor_num<=?", float(f["valor_max"]))
+
+    _it = ("EXISTS (SELECT 1 FROM itens i WHERE i.cnpj_empresa=n.cnpj_empresa "
+           "AND i.chave=n.chave AND {})")
+    if f.get("produto"):
+        add(_it.format("i.xprod LIKE ?"), f"%{f['produto']}%")
+    if f.get("ncm"):
+        add(_it.format("i.ncm LIKE ?"), f["ncm"] + "%")   # prefixo: capítulo/posição
+    if f.get("cfop"):
+        add(_it.format("i.cfop=?"), str(f["cfop"]))
+    if f.get("cean"):
+        add(_it.format("i.cean=?"), str(f["cean"]))
+
+    if f.get("venc_de") or f.get("venc_ate"):
+        sub, sp = [], []
+        if f.get("venc_de"):
+            sub.append("d.dvenc>=?"); sp.append(f["venc_de"])
+        if f.get("venc_ate"):
+            sub.append("d.dvenc<=?"); sp.append(f["venc_ate"])
+        add("EXISTS (SELECT 1 FROM duplicatas d WHERE d.cnpj_empresa=n.cnpj_empresa "
+            "AND d.chave=n.chave AND " + " AND ".join(sub) + ")", *sp)
+
+    if f.get("q"):
+        if FTS_OK:
+            add("n.chave IN (SELECT chave FROM notas_fts WHERE notas_fts MATCH ?)",
+                _termos_fts(f["q"]))
+        else:  # fallback sem FTS5
+            add("(n.emit_nome LIKE ? OR n.nat_op LIKE ? OR "
+                + _it.format("i.xprod LIKE ?") + ")",
+                f"%{f['q']}%", f"%{f['q']}%", f"%{f['q']}%")
+
+    col = {"data": "n.dh_emi", "valor": "n.valor_num"}.get(ordenar, "n.dh_emi")
+    direcao = "ASC" if str(ordem).lower() == "asc" else "DESC"
+    where = " AND ".join(cond)
+
+    with _conn() as c:
+        total = c.execute(f"SELECT COUNT(*) t FROM notas n WHERE {where}", p).fetchone()["t"]
+        linhas = c.execute(
+            f"SELECT n.* FROM notas n WHERE {where} "
+            f"ORDER BY {col} {direcao} LIMIT ? OFFSET ?",
+            (*p, limite, offset),
+        ).fetchall()
+    return {"total": total, "limite": limite, "offset": offset,
+            "notas": [dict(r) for r in linhas]}
+
+
+def itens_da_nota(cnpj: str, chave: str) -> list:
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT n_item,cprod,xprod,ncm,cfop,cean,ucom,qcom,vprod "
+            "FROM itens WHERE cnpj_empresa=? AND chave=? ORDER BY n_item",
+            (cnpj, chave)).fetchall()]
 
 
 # --------------------------------------------------------------------------- #

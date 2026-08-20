@@ -117,9 +117,34 @@ curl -X PATCH localhost:8742/rotina -H 'Content-Type: application/json' \
 | Método | Rota | O que faz |
 |---|---|---|
 | POST | `/baixar` | Body `{cnpj?, de?, ate?, tipo?, sincronizar}`: sincroniza (opcional) e retorna as notas do período |
-| GET  | `/notas?cnpj=&de=&ate=&tipo=` | Lista por período (`AAAA-MM-DD`, `tipo`=`completa`\|`resumo`) |
+| GET  | `/notas` | **Busca com filtros combináveis** (ver abaixo) |
 | GET  | `/notas/{chave}` | XML de uma nota |
+| GET  | `/notas/{chave}/json` | A nota em **JSON estruturado** (ide, emit, dest, det[], total, cobr — sem assinatura) — ideal pra agentes |
+| POST | `/reindexar` | Reprocessa os campos de busca a partir dos XMLs no disco |
 | GET  | `/download?cnpj=&de=&ate=` | `.zip` dos XMLs do período (pastas por CNPJ) |
+
+#### Filtros do `/notas`
+
+Os campos são extraídos do XML no momento do download (colunas indexadas +
+FTS5 — a busca nunca faz parse de XML). Todos opcionais e combináveis (AND):
+
+- **Texto livre**: `q` — full-text (FTS5, ignora acentos) sobre emitente,
+  destinatário, natOp, produtos e infCpl. Ex.: `q=painel mdf dexco`
+- **Nota**: `nnf`, `serie`, `natop` (trecho), `tp_nf` (0=entrada, 1=saída),
+  `valor_min`/`valor_max` (vNF), `de`/`ate` (dhEmi), `tipo`, `manifestada`
+- **Partes**: `emitente` e `destinatario` (CNPJ exato ou trecho do nome), `uf`
+- **Itens** (casa se qualquer item casar): `produto` (xProd), `ncm` (aceita
+  prefixo, ex. `4411`), `cfop`, `cean`
+- **Financeiro**: `venc_de`/`venc_ate` (vencimento de duplicatas)
+- **Paginação**: `limite` (máx 500), `offset`, `ordenar` (`data`|`valor`), `ordem`
+
+```bash
+curl "localhost:8742/notas?q=painel+mdf&valor_min=10000&de=2026-08-01"
+curl "localhost:8742/notas?emitente=dexco&cfop=6129&ordenar=valor&ordem=desc"
+curl "localhost:8742/notas?venc_de=2026-08-20&venc_ate=2026-08-31"   # contas a pagar
+```
+
+Cada parâmetro tem descrição no spec OpenAPI — pronto pra virar tool de MCP.
 
 ## Configuração global (.env)
 

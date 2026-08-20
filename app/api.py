@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import config, empresas, nfe, store, workers
+from . import config, empresas, extrator, nfe, store, workers
 
 app = FastAPI(
     title="fetch-nfe",
@@ -226,16 +226,48 @@ def baixar(req: BaixarReq):
     return {"sincronizacao": resultado_sync, "total": len(notas), "notas": notas}
 
 
-@app.get("/notas", tags=["notas"], summary="Listar notas por período")
+@app.get("/notas", tags=["notas"], summary="Buscar notas (filtros combináveis + full-text)")
 def notas(
-    cnpj: str | None = Query(None),
-    de: str | None = Query(None, description="data inicial AAAA-MM-DD"),
-    ate: str | None = Query(None, description="data final AAAA-MM-DD"),
-    tipo: str | None = Query(None, description="completa | resumo"),
+    q: str | None = Query(None, description="Busca textual livre (FTS5, ignora acentos) sobre emitente, destinatário, natureza da operação, produtos e informações complementares. Ex.: 'painel mdf dexco'"),
+    cnpj: str | None = Query(None, description="CNPJ da empresa dona da nota (a cadastrada no serviço)"),
+    de: str | None = Query(None, description="Data de emissão inicial, AAAA-MM-DD"),
+    ate: str | None = Query(None, description="Data de emissão final, AAAA-MM-DD"),
+    tipo: str | None = Query(None, description="'completa' (XML inteiro) ou 'resumo'"),
+    emitente: str | None = Query(None, description="CNPJ (14 dígitos, match exato) ou trecho do nome do emitente"),
+    destinatario: str | None = Query(None, description="CNPJ (14 dígitos) ou trecho do nome do destinatário"),
+    uf: str | None = Query(None, description="UF do emitente, ex.: SP"),
+    nnf: int | None = Query(None, description="Número da nota (nNF)"),
+    serie: str | None = Query(None, description="Série da nota"),
+    natop: str | None = Query(None, description="Trecho da natureza da operação (natOp), ex.: 'venda'"),
+    tp_nf: int | None = Query(None, ge=0, le=1, description="0=entrada, 1=saída (do ponto de vista do emitente)"),
+    valor_min: float | None = Query(None, description="Valor total da nota (vNF) mínimo"),
+    valor_max: float | None = Query(None, description="Valor total da nota (vNF) máximo"),
+    produto: str | None = Query(None, description="Trecho da descrição de um item (xProd), ex.: 'MDF'"),
+    ncm: str | None = Query(None, description="NCM de um item — aceita prefixo (ex.: '4411' pega o capítulo inteiro)"),
+    cfop: str | None = Query(None, description="CFOP de um item, ex.: 6129"),
+    cean: str | None = Query(None, description="Código de barras (cEAN/GTIN) de um item"),
+    venc_de: str | None = Query(None, description="Vencimento de duplicata a partir de, AAAA-MM-DD"),
+    venc_ate: str | None = Query(None, description="Vencimento de duplicata até, AAAA-MM-DD"),
+    manifestada: bool | None = Query(None, description="Filtra por notas já manifestadas (ciência enviada)"),
+    limite: int = Query(50, ge=1, le=500, description="Tamanho da página"),
+    offset: int = Query(0, ge=0, description="Deslocamento da página"),
+    ordenar: str = Query("data", description="'data' (dhEmi) ou 'valor' (vNF)"),
+    ordem: str = Query("desc", description="'asc' ou 'desc'"),
 ):
-    cnpj = config.somente_numeros(cnpj) if cnpj else None
-    itens = store.notas_periodo(cnpj, de, ate, tipo)
-    return {"total": len(itens), "notas": itens}
+    """Todos os filtros são opcionais e combináveis (AND). Filtros de item
+    (produto/ncm/cfop/cean) casam se QUALQUER item da nota casar. Retorna
+    `total` (sem paginação) + a página pedida."""
+    filtros = {
+        "q": q, "cnpj": config.somente_numeros(cnpj) if cnpj else None,
+        "de": de, "ate": ate, "tipo": tipo, "emitente": emitente,
+        "destinatario": destinatario, "uf": uf, "nnf": nnf, "serie": serie,
+        "natop": natop, "tp_nf": tp_nf, "valor_min": valor_min,
+        "valor_max": valor_max, "produto": produto, "ncm": ncm, "cfop": cfop,
+        "cean": cean, "venc_de": venc_de, "venc_ate": venc_ate,
+        "manifestada": manifestada,
+    }
+    return store.buscar_notas(filtros, limite=limite, offset=offset,
+                              ordenar=ordenar, ordem=ordem)
 
 
 @app.get("/notas/{chave}", tags=["notas"], summary="XML de uma nota")
@@ -245,6 +277,27 @@ def nota_xml(chave: str, cnpj: str | None = Query(None)):
         raise HTTPException(404, "nota não encontrada")
     with open(caminho, "rb") as f:
         return Response(content=f.read(), media_type="application/xml")
+
+
+@app.get("/notas/{chave}/json", tags=["notas"],
+         summary="Nota completa em JSON estruturado (pra agentes)")
+def nota_json(chave: str, cnpj: str | None = Query(None)):
+    """O XML da nota convertido em JSON aninhado (ide, emit, dest, det[],
+    total, cobr...), sem namespaces e sem a assinatura digital. Elementos
+    repetidos (det, dup) viram listas."""
+    from lxml import etree as _etree
+    caminho = store.caminho_da_chave(chave, config.somente_numeros(cnpj) if cnpj else None)
+    if not caminho or not os.path.exists(caminho):
+        raise HTTPException(404, "nota não encontrada")
+    raiz = _etree.parse(caminho).getroot()
+    return {"chave": chave, "nota": extrator.xml_para_dict(raiz)}
+
+
+@app.post("/reindexar", tags=["notas"],
+          summary="Reprocessar os campos de busca a partir dos XMLs no disco")
+def reindexar(forcar: bool = Query(True, description="True reindexa tudo; False só o que falta")):
+    threading.Thread(target=extrator.backfill, args=(forcar,), daemon=True).start()
+    return {"iniciado": True, "forcar": forcar}
 
 
 @app.get("/download", tags=["notas"], summary="ZIP dos XMLs do período")
