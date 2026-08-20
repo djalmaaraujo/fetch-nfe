@@ -116,7 +116,6 @@ curl -X PATCH localhost:8742/rotina -H 'Content-Type: application/json' \
 
 | Método | Rota | O que faz |
 |---|---|---|
-| POST | `/baixar` | Body `{cnpj?, de?, ate?, tipo?, sincronizar}`: sincroniza (opcional) e retorna as notas do período |
 | GET  | `/notas` | **Busca com filtros combináveis** (ver abaixo) |
 | GET  | `/notas/{chave}` | XML de uma nota |
 | GET  | `/notas/{chave}/json` | A nota em **JSON estruturado** (ide, emit, dest, det[], total, cobr — sem assinatura) — ideal pra agentes |
@@ -140,7 +139,7 @@ FTS5 — a busca nunca faz parse de XML). Todos opcionais e combináveis (AND):
 
 #### Paginação (padrão em toda listagem)
 
-Todo endpoint que lista registros (`/notas`, `/empresas`, `/baixar`) usa os mesmos
+Todo endpoint que lista registros (`/notas`, `/empresas`) usa os mesmos
 parâmetros — `limite` (default 50, máx 500) e `offset` — e a mesma resposta:
 `{total, limite, offset, <itens>}`, onde `total` é a contagem sem paginação.
 

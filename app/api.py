@@ -225,36 +225,6 @@ def health():
 # --------------------------------------------------------------------------- #
 # Notas
 # --------------------------------------------------------------------------- #
-class BaixarReq(BaseModel):
-    cnpj: str | None = None
-    de: str | None = None          # AAAA-MM-DD (data de emissão)
-    ate: str | None = None
-    tipo: str | None = None        # completa | resumo
-    sincronizar: bool = True
-    # Paginação padrão (mesma semântica dos endpoints GET)
-    limite: int = Field(50, ge=1, le=500, description="Tamanho da página")
-    offset: int = Field(0, ge=0, description="Deslocamento (itens a pular)")
-
-
-@app.post("/baixar", tags=["notas"], summary="Sincronizar (opcional) e retornar notas do período")
-def baixar(req: BaixarReq):
-    """Sincroniza (opcional) e retorna as notas do período (filtro por dhEmi no
-    índice local — a SEFAZ não aceita consulta por data, só incremental por NSU).
-    Resposta paginada no padrão {total, limite, offset, notas}."""
-    resultado_sync = None
-    if req.sincronizar:
-        if req.cnpj:
-            resultado_sync = [nfe.sincronizar(config.somente_numeros(req.cnpj))]
-        else:
-            resultado_sync = workers.sincronizar_todas()
-    filtros = {
-        "cnpj": config.somente_numeros(req.cnpj) if req.cnpj else None,
-        "de": req.de, "ate": req.ate, "tipo": req.tipo,
-    }
-    resultado = store.buscar_notas(filtros, limite=req.limite, offset=req.offset)
-    return {"sincronizacao": resultado_sync, **resultado}
-
-
 @app.get("/notas", tags=["notas"], summary="Buscar notas (filtros combináveis + full-text)")
 def notas(
     q: str | None = Query(None, description="Busca textual livre (FTS5, ignora acentos) sobre emitente, destinatário, natureza da operação, produtos e informações complementares. Ex.: 'painel mdf dexco'"),
