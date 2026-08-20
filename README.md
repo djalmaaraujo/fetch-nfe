@@ -136,8 +136,10 @@ single-empresa antigo — cadastro normal é via `POST /empresas`.
   Sem auth no escopo, proteja o host e não exponha a porta publicamente.
 - **Cooldown SEFAZ:** consultar sem novidade antes de ~1h gera `656 Consumo Indevido`
   (o serviço trata e espera o próximo ciclo). Não reduza `INTERVALO_SEGUNDOS` à toa.
-- **Manifestação:** a ciência (210210) é evento oficial e irreversível de
-  *recebimento* — não confirma nem recusa a operação. Controlável por empresa
-  (`manifestar`).
+- **Manifestação:** o serviço envia APENAS a ciência da operação (210210) —
+  "tomei conhecimento de que a nota existe". Não confirma a operação (210200),
+  não desconhece (210220), não recusa (210240); nenhum desses eventos existe no
+  código. A ciência serve só pra SEFAZ liberar o XML completo. Controlável por
+  empresa (`manifestar`).
 - **Primeira sincronização** de uma empresa parte do NSU 0 e traz o histórico
   disponível (~90 dias). Depois, só incremental.

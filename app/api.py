@@ -55,7 +55,14 @@ async def cadastrar_empresa(
     senha: str = Form(...),
     cnpj: str | None = Form(None, description="opcional; extraído do certificado"),
     uf: str | None = Form(None, description="opcional; vem da BrasilAPI"),
-    manifestar: bool | None = Form(None),
+    manifestar: bool | None = Form(
+        None,
+        description="Se true, notas que chegam só como resumo recebem o evento de "
+                    "CIÊNCIA da operação (210210) — apenas 'tomei conhecimento', "
+                    "não confirma nem recusa a operação — para a SEFAZ liberar o "
+                    "XML completo. O serviço nunca envia confirmação (210200), "
+                    "desconhecimento (210220) ou operação não realizada (210240).",
+    ),
 ):
     """Cadastra (ou atualiza) uma empresa: valida o .pfx com a senha, extrai o CNPJ
     do certificado, busca razão social/UF/município na BrasilAPI e persiste."""
@@ -81,7 +88,10 @@ def obter_empresa(cnpj: str):
 
 
 class EmpresaPatch(BaseModel):
-    manifestar: bool | None = None
+    manifestar: bool | None = Field(
+        None,
+        description="Só CIÊNCIA (210210) — nunca confirma nem recusa a operação.",
+    )
     ativo: bool | None = None
     senha: str | None = None   # troca de senha do certificado
     uf: str | None = None
