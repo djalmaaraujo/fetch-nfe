@@ -88,6 +88,20 @@ curl -X POST localhost:8000/empresas \
      -F "certificado=@meucert.pfx" -F "senha=SENHA_DO_A1"
 ```
 
+### Rotina (scheduler)
+
+| Método | Rota | O que faz |
+|---|---|---|
+| GET   | `/rotina` | Ativa/pausada, intervalo, última execução (com duração) e previsão da próxima |
+| PATCH | `/rotina` | `{ativa?, intervalo_segundos?}` — aplica em runtime (~15s, sem restart). Pausada = o worker não fala com a SEFAZ sozinho (nem sync, nem manifestação); o sync manual continua funcionando. Mudar o intervalo recalcula a próxima execução |
+
+```bash
+curl -X PATCH localhost:8742/rotina -H 'Content-Type: application/json' \
+     -d '{"ativa": false}'                      # pausa
+curl -X PATCH localhost:8742/rotina -H 'Content-Type: application/json' \
+     -d '{"ativa": true, "intervalo_segundos": 3600}'
+```
+
 ### Sincronização e fila
 
 | Método | Rota | O que faz |

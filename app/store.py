@@ -196,6 +196,69 @@ def registrar_sincronizacao(cnpj: str, resultado: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Estado genérico (chave/valor)
+# --------------------------------------------------------------------------- #
+def get_estado(chave: str, padrao=None):
+    with _conn() as c:
+        r = c.execute("SELECT valor FROM estado WHERE chave=?", (chave,)).fetchone()
+        return r["valor"] if r else padrao
+
+
+def set_estado(chave: str, valor) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO estado(chave,valor) VALUES(?,?) "
+            "ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
+            (chave, str(valor)),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Rotina (scheduler): configuração em runtime, sem restart
+# --------------------------------------------------------------------------- #
+def rotina_config() -> dict:
+    """Config efetiva da rotina. Default: ativa, intervalo do .env."""
+    ativa = get_estado("rotina_ativa")
+    intervalo = get_estado("rotina_intervalo")
+    return {
+        "ativa": True if ativa is None else ativa == "1",
+        "intervalo_segundos": int(intervalo) if intervalo else max(config.INTERVALO, 60),
+    }
+
+
+def set_rotina_config(ativa=None, intervalo_segundos=None) -> None:
+    if ativa is not None:
+        set_estado("rotina_ativa", "1" if ativa else "0")
+    if intervalo_segundos is not None:
+        set_estado("rotina_intervalo", int(intervalo_segundos))
+
+
+def registrar_execucao_rotina(inicio_ts: float, duracao: float) -> None:
+    set_estado("rotina_ultima_ts", inicio_ts)
+    set_estado("rotina_ultima_execucao",
+               datetime.fromtimestamp(inicio_ts).astimezone().isoformat(timespec="seconds"))
+    set_estado("rotina_ultima_duracao", round(duracao, 1))
+
+
+def rotina_status() -> dict:
+    import time as _time
+    cfg = rotina_config()
+    ultima_ts = get_estado("rotina_ultima_ts")
+    duracao = get_estado("rotina_ultima_duracao")
+    proxima = None
+    if cfg["ativa"]:
+        base = float(ultima_ts) if ultima_ts else 0.0
+        proxima_ts = max(base + cfg["intervalo_segundos"], _time.time())
+        proxima = datetime.fromtimestamp(proxima_ts).astimezone().isoformat(timespec="seconds")
+    return {
+        **cfg,
+        "ultima_execucao": get_estado("rotina_ultima_execucao"),
+        "ultima_duracao_segundos": float(duracao) if duracao else None,
+        "proxima_execucao": proxima,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Notas (dedup por empresa)
 # --------------------------------------------------------------------------- #
 def ja_tem_completa(cnpj: str, chave: str) -> bool:

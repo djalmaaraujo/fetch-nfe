@@ -8,7 +8,7 @@ import zipfile
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import config, empresas, nfe, store, workers
 
@@ -26,6 +26,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "empresas", "description": "Cadastro de empresas e certificados A1 (o CNPJ e a validade são extraídos do próprio .pfx; dados públicos via BrasilAPI)"},
         {"name": "sincronizacao", "description": "Dreno incremental da SEFAZ (por NSU, por empresa) e situação da fila de manifestação"},
+        {"name": "rotina", "description": "Configuração em runtime do scheduler: ativa/pausada e intervalo entre execuções (aplica em ~15s, sem restart). Pausada = o worker não fala com a SEFAZ sozinho; sync manual continua disponível"},
         {"name": "notas", "description": "Consulta e download dos XMLs já baixados, filtrando por CNPJ, data de emissão e tipo"},
         {"name": "infra", "description": "Saúde do serviço"},
     ],
@@ -139,6 +140,7 @@ def status():
     return {
         "ambiente": config.AMBIENTE,
         "dedup": config.DEDUP,
+        "rotina": store.rotina_status(),
         "fila": store.fila_status(),
         "empresas": [
             {**e, "contagens": store.contagens(e["cnpj"]),
@@ -151,6 +153,35 @@ def status():
 @app.get("/fila", tags=["sincronizacao"], summary="Fila de manifestação por empresa")
 def fila():
     return {"fila": store.fila_status()}
+
+
+# --------------------------------------------------------------------------- #
+# Rotina (scheduler)
+# --------------------------------------------------------------------------- #
+class RotinaPatch(BaseModel):
+    ativa: bool | None = None
+    intervalo_segundos: int | None = Field(
+        None, ge=60,
+        description="Intervalo entre execuções. Mínimo 60s; abaixo de 3600s a "
+                    "SEFAZ pode rejeitar por consumo indevido (656) quando não há novidade.",
+    )
+
+
+@app.get("/rotina", tags=["rotina"], summary="Configuração e situação da rotina")
+def rotina():
+    """Estado atual do scheduler: ativa/pausada, intervalo, última execução
+    (com duração) e previsão da próxima."""
+    return store.rotina_status()
+
+
+@app.patch("/rotina", tags=["rotina"], summary="Ativar/pausar e ajustar o intervalo")
+def configurar_rotina(patch: RotinaPatch):
+    """Aplica em runtime (o worker relê a cada ~15s — sem restart). Mudança de
+    intervalo recalcula a próxima execução a partir da última."""
+    if patch.ativa is None and patch.intervalo_segundos is None:
+        raise HTTPException(422, "nada para atualizar: informe 'ativa' e/ou 'intervalo_segundos'")
+    store.set_rotina_config(patch.ativa, patch.intervalo_segundos)
+    return store.rotina_status()
 
 
 @app.get("/health", tags=["infra"], summary="Saúde do serviço")
