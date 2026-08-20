@@ -8,7 +8,9 @@ evento 210210) por uma **fila assíncrona com retries**.
 
 Sem API paga: fala direto com o serviço gratuito e oficial da SEFAZ.
 Biblioteca: [PyNFe](https://github.com/TadaSoftware/PyNFe). Dados públicos da empresa
-(razão social, UF, município) vêm da [BrasilAPI](https://brasilapi.com.br) no cadastro.
+(razão social, UF, município) vêm da [BrasilAPI](https://brasilapi.com.br) no cadastro,
+com fallback automático pra [minha receita](https://minhareceita.org) quando ela
+estiver fora ou rate-limitada.
 
 Fora do escopo (por ora): auth e UI — **não exponha a API publicamente sem proteger**.
 
@@ -77,7 +79,7 @@ Documentação gerada automaticamente no padrão **OpenAPI 3.1** (nativo do Fast
 
 | Método | Rota | O que faz |
 |---|---|---|
-| POST   | `/empresas` | Cadastra/atualiza: multipart com `certificado` (.pfx) e `senha`. Valida o A1, extrai o CNPJ e a validade do próprio certificado, enriquece via BrasilAPI. Campos opcionais: `cnpj`, `uf` (fallback se a BrasilAPI falhar), `manifestar` |
+| POST   | `/empresas` | Cadastra/atualiza: multipart com `certificado` (.pfx) e `senha`. Valida o A1, extrai o CNPJ e a validade do próprio certificado, enriquece via BrasilAPI → minhareceita (fallback). Campos opcionais: `cnpj`, `uf` (se as duas fontes falharem), `manifestar` |
 | GET    | `/empresas` | Lista (nunca retorna a senha) |
 | GET    | `/empresas/{cnpj}` | Detalhe + contagens |
 | PATCH  | `/empresas/{cnpj}` | Ajusta `manifestar`, `ativo`, `senha`, `uf` |

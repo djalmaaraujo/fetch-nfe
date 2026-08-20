@@ -12,7 +12,13 @@ from cryptography.x509.oid import NameOID
 
 from . import config, store
 
-BRASILAPI_URL = "https://brasilapi.com.br/api/cnpj/v1/{cnpj}"
+# Fontes de dados públicos de CNPJ, em ordem de preferência. Ambas gratuitas,
+# sem chave, e com os mesmos nomes de campos (razao_social/nome_fantasia/uf/
+# municipio). A minhareceita (open-source) cobre o rate-limit da BrasilAPI.
+FONTES_CNPJ = [
+    ("brasilapi", "https://brasilapi.com.br/api/cnpj/v1/{cnpj}"),
+    ("minhareceita", "https://minhareceita.org/{cnpj}"),
+]
 
 
 class ErroCadastro(Exception):
@@ -46,28 +52,30 @@ def inspecionar_pfx(conteudo: bytes, senha: str) -> dict:
     }
 
 
-def consultar_brasilapi(cnpj: str) -> dict:
-    """Dados públicos da empresa. Best-effort: se a BrasilAPI falhar, retorna {}.
-    Um retry no rate-limit (429) — a API é gratuita e limita por IP."""
-    import time
-    for tentativa in (1, 2):
+def consultar_dados_publicos(cnpj: str) -> dict:
+    """Dados públicos da empresa, tentando as fontes em ordem (fallback quando
+    uma estiver fora ou rate-limitada). Best-effort: falhou tudo, retorna {}."""
+    for nome, url in FONTES_CNPJ:
         try:
-            r = requests.get(BRASILAPI_URL.format(cnpj=cnpj), timeout=15)
-            if r.status_code == 200:
-                d = r.json()
-                return {
-                    "razao_social": d.get("razao_social"),
-                    "nome_fantasia": d.get("nome_fantasia"),
-                    "uf": (d.get("uf") or "").upper(),
-                    "municipio": d.get("municipio"),
-                }
-            if r.status_code == 429 and tentativa == 1:
-                time.sleep(3)
-                continue
-            break
-        except requests.RequestException:
-            break
+            r = requests.get(url.format(cnpj=cnpj), timeout=15)
+            if r.status_code != 200:
+                continue  # 429/erro nesta fonte → tenta a próxima
+            d = r.json()
+            dados = {
+                "razao_social": d.get("razao_social"),
+                "nome_fantasia": d.get("nome_fantasia"),
+                "uf": (d.get("uf") or "").upper(),
+                "municipio": d.get("municipio"),
+            }
+            if dados["razao_social"] or dados["uf"]:
+                return dados
+        except (requests.RequestException, ValueError):
+            continue
     return {}
+
+
+# Compatibilidade com o nome antigo
+consultar_brasilapi = consultar_dados_publicos
 
 
 def cadastrar(conteudo_pfx: bytes, senha: str, cnpj: str = None,
