@@ -64,7 +64,14 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-## API (padrão em http://localhost:8000 — docs em /docs)
+## API (padrão em http://localhost:8742)
+
+Documentação gerada automaticamente no padrão **OpenAPI 3.1** (nativo do FastAPI):
+
+- **`/docs`** — Swagger UI interativo (dá pra testar os endpoints direto)
+- **`/redoc`** — ReDoc (leitura)
+- **`/openapi.json`** — o spec cru, pra importar em Postman/Insomnia ou gerar clients
+  (ex.: `openapi-generator`, `orval`)
 
 ### Empresas / certificados
 

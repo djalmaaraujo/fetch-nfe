@@ -14,7 +14,21 @@ from . import config, empresas, nfe, store, workers
 
 app = FastAPI(
     title="fetch-nfe",
-    description="Baixa NF-e via NFeDistribuicaoDFe (SEFAZ) — multi-empresa, certificado A1",
+    version="1.0.0",
+    description=(
+        "Baixa NF-e (modelo 55) via webservice NFeDistribuicaoDFe da SEFAZ — "
+        "multi-empresa, certificado A1 por CNPJ, fila assíncrona de manifestação "
+        "do destinatário (ciência 210210) e consulta/download por data de emissão.\n\n"
+        "A distribuição da SEFAZ é incremental por NSU; filtros de data agem sobre "
+        "o índice local. Sem autenticação — não exponha publicamente sem proteger.\n\n"
+        "Spec OpenAPI: `/openapi.json` · Swagger UI: `/docs` · ReDoc: `/redoc`"
+    ),
+    openapi_tags=[
+        {"name": "empresas", "description": "Cadastro de empresas e certificados A1 (o CNPJ e a validade são extraídos do próprio .pfx; dados públicos via BrasilAPI)"},
+        {"name": "sincronizacao", "description": "Dreno incremental da SEFAZ (por NSU, por empresa) e situação da fila de manifestação"},
+        {"name": "notas", "description": "Consulta e download dos XMLs já baixados, filtrando por CNPJ, data de emissão e tipo"},
+        {"name": "infra", "description": "Saúde do serviço"},
+    ],
 )
 
 
@@ -34,7 +48,7 @@ def _empresa_ou_404(cnpj: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Empresas / certificados
 # --------------------------------------------------------------------------- #
-@app.post("/empresas", status_code=201)
+@app.post("/empresas", status_code=201, tags=["empresas"], summary="Cadastrar/atualizar empresa (upload do .pfx)")
 async def cadastrar_empresa(
     certificado: UploadFile = File(..., description="arquivo .pfx/.p12 do A1"),
     senha: str = Form(...),
@@ -52,12 +66,12 @@ async def cadastrar_empresa(
     return emp
 
 
-@app.get("/empresas")
+@app.get("/empresas", tags=["empresas"], summary="Listar empresas")
 def listar_empresas():
     return {"empresas": store.listar_empresas()}
 
 
-@app.get("/empresas/{cnpj}")
+@app.get("/empresas/{cnpj}", tags=["empresas"], summary="Detalhar empresa (com contagens)")
 def obter_empresa(cnpj: str):
     emp = _empresa_ou_404(cnpj)
     emp["contagens"] = store.contagens(emp["cnpj"])
@@ -72,7 +86,7 @@ class EmpresaPatch(BaseModel):
     uf: str | None = None
 
 
-@app.patch("/empresas/{cnpj}")
+@app.patch("/empresas/{cnpj}", tags=["empresas"], summary="Ajustar manifestar/ativo/senha/UF")
 def atualizar_empresa(cnpj: str, patch: EmpresaPatch):
     emp = _empresa_ou_404(cnpj)
     campos = {}
@@ -90,7 +104,7 @@ def atualizar_empresa(cnpj: str, patch: EmpresaPatch):
     return store.get_empresa(emp["cnpj"])
 
 
-@app.delete("/empresas/{cnpj}")
+@app.delete("/empresas/{cnpj}", tags=["empresas"], summary="Desativar empresa (soft delete)")
 def desativar_empresa(cnpj: str):
     """Desativação (soft delete): para de sincronizar/manifestar. Os XMLs já
     baixados e o certificado permanecem no disco."""
@@ -102,7 +116,7 @@ def desativar_empresa(cnpj: str):
 # --------------------------------------------------------------------------- #
 # Sincronização
 # --------------------------------------------------------------------------- #
-@app.post("/sincronizar")
+@app.post("/sincronizar", tags=["sincronizacao"], summary="Sincronizar todas as empresas ativas")
 def sincronizar_todas():
     """Dispara sincronização de todas as empresas ativas, em segundo plano."""
     ativas = store.listar_empresas(somente_ativas=True)
@@ -110,7 +124,7 @@ def sincronizar_todas():
     return {"iniciado": True, "empresas": [e["cnpj"] for e in ativas]}
 
 
-@app.post("/empresas/{cnpj}/sincronizar")
+@app.post("/empresas/{cnpj}/sincronizar", tags=["sincronizacao"], summary="Sincronizar uma empresa")
 def sincronizar_empresa(cnpj: str):
     emp = _empresa_ou_404(cnpj)
     if store.sync_em_andamento(emp["cnpj"]):
@@ -119,7 +133,7 @@ def sincronizar_empresa(cnpj: str):
     return {"iniciado": True, "cnpj": emp["cnpj"]}
 
 
-@app.get("/status")
+@app.get("/status", tags=["sincronizacao"], summary="Status geral (empresas, NSU, fila)")
 def status():
     lista = store.listar_empresas()
     return {
@@ -134,12 +148,12 @@ def status():
     }
 
 
-@app.get("/fila")
+@app.get("/fila", tags=["sincronizacao"], summary="Fila de manifestação por empresa")
 def fila():
     return {"fila": store.fila_status()}
 
 
-@app.get("/health")
+@app.get("/health", tags=["infra"], summary="Saúde do serviço")
 def health():
     ativas = store.listar_empresas(somente_ativas=True)
     return {"ok": True, "empresas_ativas": len(ativas)}
@@ -156,7 +170,7 @@ class BaixarReq(BaseModel):
     sincronizar: bool = True
 
 
-@app.post("/baixar")
+@app.post("/baixar", tags=["notas"], summary="Sincronizar (opcional) e retornar notas do período")
 def baixar(req: BaixarReq):
     """Sincroniza (opcional) e retorna as notas do período (filtro por dhEmi no
     índice local — a SEFAZ não aceita consulta por data, só incremental por NSU)."""
@@ -171,7 +185,7 @@ def baixar(req: BaixarReq):
     return {"sincronizacao": resultado_sync, "total": len(notas), "notas": notas}
 
 
-@app.get("/notas")
+@app.get("/notas", tags=["notas"], summary="Listar notas por período")
 def notas(
     cnpj: str | None = Query(None),
     de: str | None = Query(None, description="data inicial AAAA-MM-DD"),
@@ -183,7 +197,7 @@ def notas(
     return {"total": len(itens), "notas": itens}
 
 
-@app.get("/notas/{chave}")
+@app.get("/notas/{chave}", tags=["notas"], summary="XML de uma nota")
 def nota_xml(chave: str, cnpj: str | None = Query(None)):
     caminho = store.caminho_da_chave(chave, config.somente_numeros(cnpj) if cnpj else None)
     if not caminho or not os.path.exists(caminho):
@@ -192,7 +206,7 @@ def nota_xml(chave: str, cnpj: str | None = Query(None)):
         return Response(content=f.read(), media_type="application/xml")
 
 
-@app.get("/download")
+@app.get("/download", tags=["notas"], summary="ZIP dos XMLs do período")
 def download_zip(
     cnpj: str | None = Query(None), de: str | None = Query(None),
     ate: str | None = Query(None), tipo: str | None = Query(None),
