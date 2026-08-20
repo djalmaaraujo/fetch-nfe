@@ -6,7 +6,7 @@ import os
 import threading
 import zipfile
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,28 @@ app = FastAPI(
 def _startup():
     store.init()
     empresas.seed_do_env()
+
+
+# --------------------------------------------------------------------------- #
+# Paginação padrão — mesmos parâmetros e mesma resposta em toda listagem:
+# {total, limite, offset, <itens>} (total = sem paginação)
+# --------------------------------------------------------------------------- #
+class Paginacao:
+    def __init__(
+        self,
+        limite: int = Query(50, ge=1, le=500, description="Tamanho da página"),
+        offset: int = Query(0, ge=0, description="Deslocamento (itens a pular)"),
+    ):
+        self.limite = limite
+        self.offset = offset
+
+
+def paginar(itens: list, pag: Paginacao, chave: str) -> dict:
+    """Aplica a paginação padrão a uma lista em memória."""
+    return {
+        "total": len(itens), "limite": pag.limite, "offset": pag.offset,
+        chave: itens[pag.offset:pag.offset + pag.limite],
+    }
 
 
 def _empresa_ou_404(cnpj: str) -> dict:
@@ -75,8 +97,8 @@ async def cadastrar_empresa(
 
 
 @app.get("/empresas", tags=["empresas"], summary="Listar empresas")
-def listar_empresas():
-    return {"empresas": store.listar_empresas()}
+def listar_empresas(pag: Paginacao = Depends()):
+    return paginar(store.listar_empresas(), pag, "empresas")
 
 
 @app.get("/empresas/{cnpj}", tags=["empresas"], summary="Detalhar empresa (com contagens)")
@@ -209,21 +231,28 @@ class BaixarReq(BaseModel):
     ate: str | None = None
     tipo: str | None = None        # completa | resumo
     sincronizar: bool = True
+    # Paginação padrão (mesma semântica dos endpoints GET)
+    limite: int = Field(50, ge=1, le=500, description="Tamanho da página")
+    offset: int = Field(0, ge=0, description="Deslocamento (itens a pular)")
 
 
 @app.post("/baixar", tags=["notas"], summary="Sincronizar (opcional) e retornar notas do período")
 def baixar(req: BaixarReq):
     """Sincroniza (opcional) e retorna as notas do período (filtro por dhEmi no
-    índice local — a SEFAZ não aceita consulta por data, só incremental por NSU)."""
+    índice local — a SEFAZ não aceita consulta por data, só incremental por NSU).
+    Resposta paginada no padrão {total, limite, offset, notas}."""
     resultado_sync = None
     if req.sincronizar:
         if req.cnpj:
             resultado_sync = [nfe.sincronizar(config.somente_numeros(req.cnpj))]
         else:
             resultado_sync = workers.sincronizar_todas()
-    cnpj = config.somente_numeros(req.cnpj) if req.cnpj else None
-    notas = store.notas_periodo(cnpj, req.de, req.ate, req.tipo)
-    return {"sincronizacao": resultado_sync, "total": len(notas), "notas": notas}
+    filtros = {
+        "cnpj": config.somente_numeros(req.cnpj) if req.cnpj else None,
+        "de": req.de, "ate": req.ate, "tipo": req.tipo,
+    }
+    resultado = store.buscar_notas(filtros, limite=req.limite, offset=req.offset)
+    return {"sincronizacao": resultado_sync, **resultado}
 
 
 @app.get("/notas", tags=["notas"], summary="Buscar notas (filtros combináveis + full-text)")
@@ -249,10 +278,9 @@ def notas(
     venc_de: str | None = Query(None, description="Vencimento de duplicata a partir de, AAAA-MM-DD"),
     venc_ate: str | None = Query(None, description="Vencimento de duplicata até, AAAA-MM-DD"),
     manifestada: bool | None = Query(None, description="Filtra por notas já manifestadas (ciência enviada)"),
-    limite: int = Query(50, ge=1, le=500, description="Tamanho da página"),
-    offset: int = Query(0, ge=0, description="Deslocamento da página"),
     ordenar: str = Query("data", description="'data' (dhEmi) ou 'valor' (vNF)"),
     ordem: str = Query("desc", description="'asc' ou 'desc'"),
+    pag: Paginacao = Depends(),
 ):
     """Todos os filtros são opcionais e combináveis (AND). Filtros de item
     (produto/ncm/cfop/cean) casam se QUALQUER item da nota casar. Retorna
@@ -266,7 +294,7 @@ def notas(
         "cean": cean, "venc_de": venc_de, "venc_ate": venc_ate,
         "manifestada": manifestada,
     }
-    return store.buscar_notas(filtros, limite=limite, offset=offset,
+    return store.buscar_notas(filtros, limite=pag.limite, offset=pag.offset,
                               ordenar=ordenar, ordem=ordem)
 
 

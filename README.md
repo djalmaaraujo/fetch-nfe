@@ -136,7 +136,13 @@ FTS5 — a busca nunca faz parse de XML). Todos opcionais e combináveis (AND):
 - **Itens** (casa se qualquer item casar): `produto` (xProd), `ncm` (aceita
   prefixo, ex. `4411`), `cfop`, `cean`
 - **Financeiro**: `venc_de`/`venc_ate` (vencimento de duplicatas)
-- **Paginação**: `limite` (máx 500), `offset`, `ordenar` (`data`|`valor`), `ordem`
+- **Ordenação**: `ordenar` (`data`|`valor`), `ordem` (`asc`|`desc`)
+
+#### Paginação (padrão em toda listagem)
+
+Todo endpoint que lista registros (`/notas`, `/empresas`, `/baixar`) usa os mesmos
+parâmetros — `limite` (default 50, máx 500) e `offset` — e a mesma resposta:
+`{total, limite, offset, <itens>}`, onde `total` é a contagem sem paginação.
 
 ```bash
 curl "localhost:8742/notas?q=painel+mdf&valor_min=10000&de=2026-08-01"
