@@ -415,6 +415,30 @@ def set_estado(chave: str, valor) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Cooldown SEFAZ por empresa: depois de um dreno sem novidade (137 ou fim do
+# backlog) ou de um 656, não consultar aquele CNPJ por 1h (regra da SEFAZ)
+# --------------------------------------------------------------------------- #
+def get_cooldown(cnpj: str) -> float:
+    """Epoch até quando NÃO se deve consultar a SEFAZ para este CNPJ."""
+    try:
+        return float(get_estado(f"cooldown:{cnpj}", "0") or 0)
+    except ValueError:
+        return 0.0
+
+
+def set_cooldown(cnpj: str, ate_epoch: float) -> None:
+    set_estado(f"cooldown:{cnpj}", ate_epoch)
+
+
+def cooldown_iso(cnpj: str):
+    ts = get_cooldown(cnpj)
+    import time as _time
+    if ts <= _time.time():
+        return None
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+# --------------------------------------------------------------------------- #
 # Rotina (scheduler): configuração em runtime, sem restart
 # --------------------------------------------------------------------------- #
 def rotina_config() -> dict:

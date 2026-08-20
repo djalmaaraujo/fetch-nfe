@@ -104,7 +104,10 @@ def _processar(emp: dict, inner, conteudo: bytes, nsu: str) -> None:
 # --------------------------------------------------------------------------- #
 # Sincronização de UMA empresa (um dreno)
 # --------------------------------------------------------------------------- #
-def sincronizar(cnpj: str) -> dict:
+COOLDOWN_SEFAZ = 3600  # regra da SEFAZ: 1h entre consultas sem documento novo
+
+
+def sincronizar(cnpj: str, forcar: bool = False) -> dict:
     emp = store.get_empresa(cnpj, com_senha=True)
     if not emp:
         return {"cnpj": cnpj, "erro": "empresa não cadastrada"}
@@ -112,6 +115,14 @@ def sincronizar(cnpj: str) -> dict:
         return {"cnpj": cnpj, "erro": "empresa inativa"}
     if not os.path.exists(emp["cert_path"]):
         return {"cnpj": cnpj, "erro": f"certificado não encontrado: {emp['cert_path']}"}
+
+    # Proteção contra bloqueio da SEFAZ: depois de um dreno sem novidade (137/
+    # fim do backlog) ou de um 656, não consulta este CNPJ por 1h. O bloqueio
+    # é por certificado/CNPJ — a única proteção real é disciplina de consulta.
+    ate = store.cooldown_iso(cnpj)
+    if ate and not forcar:
+        log(f"[{cnpj}] Em cooldown da SEFAZ até {ate} — pulando (use forcar pra ignorar).")
+        return {"cnpj": cnpj, "erro": f"em cooldown da SEFAZ até {ate}", "cooldown_ate": ate}
 
     resultado = {"cnpj": cnpj, "documentos": 0, "enfileiradas": 0, "cstat": None, "erro": None}
     try:
@@ -137,9 +148,11 @@ def sincronizar(cnpj: str) -> dict:
                 if cstat == "137":
                     log(f"[{cnpj}] Nada novo (137).")
                     store.set_ultimo_nsu(cnpj, novo)
+                    store.set_cooldown(cnpj, time.time() + COOLDOWN_SEFAZ)
                     break
                 if cstat == "656":
-                    log(f"[{cnpj}] Consumo indevido (656). Aguardando próximo ciclo.")
+                    log(f"[{cnpj}] Consumo indevido (656). Cooldown de 1h aplicado.")
+                    store.set_cooldown(cnpj, time.time() + COOLDOWN_SEFAZ)
                     break
                 if cstat != "138":
                     log(f"[{cnpj}] cStat {cstat}: {motivo}. Encerrando.")
@@ -163,6 +176,7 @@ def sincronizar(cnpj: str) -> dict:
                 store.set_ultimo_nsu(cnpj, nsu)
                 if nsu >= max_nsu:
                     log(f"[{cnpj}] Fim do backlog.")
+                    store.set_cooldown(cnpj, time.time() + COOLDOWN_SEFAZ)
                     break
                 time.sleep(config.PAUSA_ENTRE_CHAMADAS)
 

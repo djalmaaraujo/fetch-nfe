@@ -164,8 +164,15 @@ single-empresa antigo — cadastro normal é via `POST /empresas`.
 - **Segredos:** a senha do certificado fica no SQLite local (`state/notas.db`,
   chmod 600, fora do git) — o serviço precisa dela em claro pra assinar os eventos.
   Sem auth no escopo, proteja o host e não exponha a porta publicamente.
-- **Cooldown SEFAZ:** consultar sem novidade antes de ~1h gera `656 Consumo Indevido`
-  (o serviço trata e espera o próximo ciclo). Não reduza `INTERVALO_SEGUNDOS` à toa.
+- **Proteção contra bloqueio da SEFAZ** (duas camadas, por empresa):
+  1. *Lock*: API e rotina nunca consultam o mesmo CNPJ em paralelo.
+  2. *Cooldown automático*: depois de um dreno sem novidade (137/fim do backlog)
+     ou de um `656 Consumo Indevido`, aquele CNPJ não é consultado por 1h — nem
+     pela rotina, nem pelo sync manual (que aceita `?forcar=true` como exceção
+     consciente). O `cooldown_sefaz_ate` aparece em `/status` e `/empresas/{cnpj}`.
+- **Proxy de saída:** `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` no `.env` funcionam
+  nativamente (requests). Atenção: proxy NÃO evita bloqueio da SEFAZ — o
+  rate-limit dela é por certificado/CNPJ (mTLS), não por IP.
 - **Manifestação:** o serviço envia APENAS a ciência da operação (210210) —
   "tomei conhecimento de que a nota existe". Não confirma a operação (210200),
   não desconhece (210220), não recusa (210240); nenhum desses eventos existe no

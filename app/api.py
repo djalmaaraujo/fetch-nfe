@@ -106,6 +106,7 @@ def obter_empresa(cnpj: str):
     emp = _empresa_ou_404(cnpj)
     emp["contagens"] = store.contagens(emp["cnpj"])
     emp["sincronizando"] = store.sync_em_andamento(emp["cnpj"])
+    emp["cooldown_sefaz_ate"] = store.cooldown_iso(emp["cnpj"])
     return emp
 
 
@@ -158,12 +159,21 @@ def sincronizar_todas():
 
 
 @app.post("/empresas/{cnpj}/sincronizar", tags=["sincronizacao"], summary="Sincronizar uma empresa")
-def sincronizar_empresa(cnpj: str):
+def sincronizar_empresa(
+    cnpj: str,
+    forcar: bool = Query(False, description="Ignora o cooldown de 1h da SEFAZ. "
+                         "Use com parcimônia: consultar sem novidade em menos de "
+                         "1h gera 656 e insistir pode levar a bloqueio."),
+):
     emp = _empresa_ou_404(cnpj)
     if store.sync_em_andamento(emp["cnpj"]):
         return {"iniciado": False, "motivo": "já em andamento"}
-    threading.Thread(target=nfe.sincronizar, args=(emp["cnpj"],), daemon=True).start()
-    return {"iniciado": True, "cnpj": emp["cnpj"]}
+    ate = store.cooldown_iso(emp["cnpj"])
+    if ate and not forcar:
+        return {"iniciado": False, "motivo": f"em cooldown da SEFAZ até {ate}",
+                "cooldown_ate": ate}
+    threading.Thread(target=nfe.sincronizar, args=(emp["cnpj"], forcar), daemon=True).start()
+    return {"iniciado": True, "cnpj": emp["cnpj"], "forcado": forcar}
 
 
 @app.get("/status", tags=["sincronizacao"], summary="Status geral (empresas, NSU, fila)")
@@ -176,7 +186,8 @@ def status():
         "fila": store.fila_status(),
         "empresas": [
             {**e, "contagens": store.contagens(e["cnpj"]),
-             "sincronizando": store.sync_em_andamento(e["cnpj"])}
+             "sincronizando": store.sync_em_andamento(e["cnpj"]),
+             "cooldown_sefaz_ate": store.cooldown_iso(e["cnpj"])}
             for e in lista
         ],
     }
