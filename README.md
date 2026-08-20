@@ -168,8 +168,17 @@ single-empresa antigo — cadastro normal é via `POST /empresas`.
   1. *Lock*: API e rotina nunca consultam o mesmo CNPJ em paralelo.
   2. *Cooldown automático*: depois de um dreno sem novidade (137/fim do backlog)
      ou de um `656 Consumo Indevido`, aquele CNPJ não é consultado por 1h — nem
-     pela rotina, nem pelo sync manual (que aceita `?forcar=true` como exceção
-     consciente). O `cooldown_sefaz_ate` aparece em `/status` e `/empresas/{cnpj}`.
+     pela rotina, nem pelo sync manual. `?forcar=true` só fura cooldown de dreno
+     sem novidade; **nunca** fura um 656 (insistir durante o bloqueio reinicia o
+     temporizador na SEFAZ). O controle da SEFAZ é por CNPJ do interessado, então
+     matriz e filiais têm contadores independentes mesmo com o mesmo certificado.
+     `cooldown_sefaz_ate` aparece em `/status` e `/empresas/{cnpj}`.
+- **Matriz e filiais:** a distribuição entrega as notas em que o CNPJ cadastrado é
+  DESTINATÁRIO (emitidas pela própria empresa não vêm — o emissor já as tem). Pra
+  cobrir as notas recebidas por uma filial, cadastre-a como outra empresa: a SEFAZ
+  aceita o certificado da matriz para CNPJs da mesma raiz (`POST /empresas` com o
+  mesmo `.pfx` e `cnpj` da filial). Na busca, `cnpj` filtra por estabelecimento;
+  sem `cnpj`, cruza todos.
 - **Proxy de saída:** `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` no `.env` funcionam
   nativamente (requests). Atenção: proxy NÃO evita bloqueio da SEFAZ — o
   rate-limit dela é por certificado/CNPJ (mTLS), não por IP.

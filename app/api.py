@@ -161,17 +161,21 @@ def sincronizar_todas():
 @app.post("/empresas/{cnpj}/sincronizar", tags=["sincronizacao"], summary="Sincronizar uma empresa")
 def sincronizar_empresa(
     cnpj: str,
-    forcar: bool = Query(False, description="Ignora o cooldown de 1h da SEFAZ. "
-                         "Use com parcimônia: consultar sem novidade em menos de "
-                         "1h gera 656 e insistir pode levar a bloqueio."),
+    forcar: bool = Query(False, description="Ignora o cooldown quando ele veio de um "
+                         "dreno sem novidade. NÃO fura cooldown de 656: insistir "
+                         "durante um bloqueio reinicia o temporizador na SEFAZ."),
 ):
     emp = _empresa_ou_404(cnpj)
     if store.sync_em_andamento(emp["cnpj"]):
         return {"iniciado": False, "motivo": "já em andamento"}
-    ate = store.cooldown_iso(emp["cnpj"])
-    if ate and not forcar:
-        return {"iniciado": False, "motivo": f"em cooldown da SEFAZ até {ate}",
-                "cooldown_ate": ate}
+    info = store.cooldown_info(emp["cnpj"])
+    if info and (not forcar or info["origem"] == "656"):
+        motivo = (f"bloqueio 656 ativo até {info['ate']} — forcar não se aplica "
+                  "(insistir reinicia o temporizador na SEFAZ)"
+                  if forcar and info["origem"] == "656"
+                  else f"em cooldown da SEFAZ até {info['ate']}")
+        return {"iniciado": False, "motivo": motivo,
+                "cooldown_ate": info["ate"], "cooldown_origem": info["origem"]}
     threading.Thread(target=nfe.sincronizar, args=(emp["cnpj"], forcar), daemon=True).start()
     return {"iniciado": True, "cnpj": emp["cnpj"], "forcado": forcar}
 

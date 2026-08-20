@@ -81,9 +81,13 @@ def cadastrar(conteudo_pfx: bytes, senha: str, cnpj: str = None,
             "não consegui extrair o CNPJ do certificado; informe o campo 'cnpj'"
         )
     if info["cnpj"] and cnpj != info["cnpj"]:
-        raise ErroCadastro(
-            f"CNPJ informado ({cnpj}) difere do CNPJ do certificado ({info['cnpj']})"
-        )
+        # Mesma raiz (8 primeiros dígitos) é permitido: a SEFAZ aceita certificado
+        # da matriz para consultar filiais (e vice-versa)
+        if cnpj[:8] != info["cnpj"][:8]:
+            raise ErroCadastro(
+                f"CNPJ informado ({cnpj}) é de outra raiz que o do certificado "
+                f"({info['cnpj']}) — a SEFAZ só aceita certificado da mesma raiz"
+            )
 
     # Enriquecimento: BrasilAPI, com fallback pro que já temos no banco
     publico = consultar_brasilapi(cnpj)

@@ -117,12 +117,19 @@ def sincronizar(cnpj: str, forcar: bool = False) -> dict:
         return {"cnpj": cnpj, "erro": f"certificado não encontrado: {emp['cert_path']}"}
 
     # Proteção contra bloqueio da SEFAZ: depois de um dreno sem novidade (137/
-    # fim do backlog) ou de um 656, não consulta este CNPJ por 1h. O bloqueio
-    # é por certificado/CNPJ — a única proteção real é disciplina de consulta.
-    ate = store.cooldown_iso(cnpj)
-    if ate and not forcar:
-        log(f"[{cnpj}] Em cooldown da SEFAZ até {ate} — pulando (use forcar pra ignorar).")
-        return {"cnpj": cnpj, "erro": f"em cooldown da SEFAZ até {ate}", "cooldown_ate": ate}
+    # fim do backlog) ou de um 656, não consulta este CNPJ por 1h. O controle
+    # da SEFAZ é por CNPJ do interessado — disciplina de consulta é a proteção.
+    # forcar só fura cooldown de origem 'fim': insistir durante um 656 REINICIA
+    # o temporizador do bloqueio na SEFAZ (regra oficial) — nunca vale a pena.
+    info = store.cooldown_info(cnpj)
+    if info and (not forcar or info["origem"] == "656"):
+        if forcar and info["origem"] == "656":
+            log(f"[{cnpj}] forcar ignorado: cooldown veio de 656 — insistir "
+                f"reiniciaria o bloqueio na SEFAZ. Aguarde até {info['ate']}.")
+        else:
+            log(f"[{cnpj}] Em cooldown da SEFAZ até {info['ate']} — pulando.")
+        return {"cnpj": cnpj, "erro": f"em cooldown da SEFAZ até {info['ate']}",
+                "cooldown_ate": info["ate"], "cooldown_origem": info["origem"]}
 
     resultado = {"cnpj": cnpj, "documentos": 0, "enfileiradas": 0, "cstat": None, "erro": None}
     try:
@@ -152,7 +159,7 @@ def sincronizar(cnpj: str, forcar: bool = False) -> dict:
                     break
                 if cstat == "656":
                     log(f"[{cnpj}] Consumo indevido (656). Cooldown de 1h aplicado.")
-                    store.set_cooldown(cnpj, time.time() + COOLDOWN_SEFAZ)
+                    store.set_cooldown(cnpj, time.time() + COOLDOWN_SEFAZ, origem="656")
                     break
                 if cstat != "138":
                     log(f"[{cnpj}] cStat {cstat}: {motivo}. Encerrando.")

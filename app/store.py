@@ -426,16 +426,27 @@ def get_cooldown(cnpj: str) -> float:
         return 0.0
 
 
-def set_cooldown(cnpj: str, ate_epoch: float) -> None:
+def set_cooldown(cnpj: str, ate_epoch: float, origem: str = "fim") -> None:
+    """origem: 'fim' (dreno sem novidade/137) ou '656' (bloqueio real da SEFAZ)."""
     set_estado(f"cooldown:{cnpj}", ate_epoch)
+    set_estado(f"cooldown_origem:{cnpj}", origem)
 
 
-def cooldown_iso(cnpj: str):
+def cooldown_info(cnpj: str):
+    """{'ate': iso, 'origem': 'fim'|'656'} se ativo, senão None."""
     ts = get_cooldown(cnpj)
     import time as _time
     if ts <= _time.time():
         return None
-    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+    return {
+        "ate": datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds"),
+        "origem": get_estado(f"cooldown_origem:{cnpj}", "fim"),
+    }
+
+
+def cooldown_iso(cnpj: str):
+    info = cooldown_info(cnpj)
+    return info["ate"] if info else None
 
 
 # --------------------------------------------------------------------------- #
