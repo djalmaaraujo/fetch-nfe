@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """API HTTP: cadastro de empresas/certificados, sincronização e consulta/download
 das notas. Sem auth (fora do escopo) — não exponha publicamente sem proteger."""
+import base64
+import binascii
 import io
 import os
 import threading
@@ -10,7 +12,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFi
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import config, empresas, extrator, nfe, store, workers
+from . import config, danfe, empresas, extrator, nfe, store, workers
 
 app = FastAPI(
     title="fetch-nfe",
@@ -28,6 +30,7 @@ app = FastAPI(
         {"name": "sincronizacao", "description": "Dreno incremental da SEFAZ (por NSU, por empresa) e situação da fila de manifestação"},
         {"name": "rotina", "description": "Configuração em runtime do scheduler: ativa/pausada e intervalo entre execuções (aplica em ~15s, sem restart). Pausada = o worker não fala com a SEFAZ sozinho; sync manual continua disponível"},
         {"name": "notas", "description": "Consulta e download dos XMLs já baixados, filtrando por CNPJ, data de emissão e tipo"},
+        {"name": "documentos", "description": "Geração de PDF (DANFE/DACTE/DAMDFE) a partir do XML autorizado — upload ou base64. NFC-e (modelo 65) não é suportada"},
         {"name": "infra", "description": "Saúde do serviço"},
     ],
 )
@@ -66,6 +69,62 @@ def _empresa_ou_404(cnpj: str) -> dict:
     if not emp:
         raise HTTPException(404, "empresa não cadastrada")
     return emp
+
+
+# --------------------------------------------------------------------------- #
+# Documentos auxiliares (DANFE/DACTE/DAMDFE): XML autorizado -> PDF
+# --------------------------------------------------------------------------- #
+def _xml_do_pedido(arquivo: UploadFile | None, xml_base64: str | None) -> bytes:
+    if arquivo is not None:
+        conteudo = arquivo.file.read()
+        if not conteudo:
+            raise HTTPException(422, "arquivo enviado está vazio")
+        return conteudo
+    if xml_base64:
+        try:
+            # tolera base64 quebrado em linhas (encoders com wrap em 76 col)
+            return base64.b64decode("".join(xml_base64.split()), validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(422, "xml_base64 inválido")
+    raise HTTPException(422, "envie 'arquivo' (upload) ou 'xml_base64'")
+
+
+def _gerar_documento(tipo: str, xml: bytes) -> Response:
+    try:
+        pdf = danfe.gerar_pdf(tipo, xml)
+    except danfe.ErroGeracao as e:
+        raise HTTPException(422, f"XML inválido para {tipo}: {e}")
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{tipo}.pdf"'},
+    )
+
+
+@app.post("/danfe", tags=["documentos"], summary="Gerar PDF do DANFE (NF-e, modelo 55)")
+def gerar_danfe(
+    arquivo: UploadFile | None = File(None, description="XML autorizado da NF-e (nfeProc)"),
+    xml_base64: str | None = Form(None, description="XML autorizado em base64, alternativa ao upload"),
+):
+    xml = _xml_do_pedido(arquivo, xml_base64)
+    return _gerar_documento("danfe", xml)
+
+
+@app.post("/dacte", tags=["documentos"], summary="Gerar PDF do DACTE (CT-e)")
+def gerar_dacte(
+    arquivo: UploadFile | None = File(None, description="XML autorizado do CT-e (cteProc)"),
+    xml_base64: str | None = Form(None, description="XML autorizado em base64, alternativa ao upload"),
+):
+    xml = _xml_do_pedido(arquivo, xml_base64)
+    return _gerar_documento("dacte", xml)
+
+
+@app.post("/damdfe", tags=["documentos"], summary="Gerar PDF do DAMDFE (MDF-e)")
+def gerar_damdfe(
+    arquivo: UploadFile | None = File(None, description="XML autorizado do MDF-e (mdfeProc)"),
+    xml_base64: str | None = Form(None, description="XML autorizado em base64, alternativa ao upload"),
+):
+    xml = _xml_do_pedido(arquivo, xml_base64)
+    return _gerar_documento("damdfe", xml)
 
 
 # --------------------------------------------------------------------------- #

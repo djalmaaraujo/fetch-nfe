@@ -139,6 +139,26 @@ FTS5 — a busca nunca faz parse de XML). Todos opcionais e combináveis (AND):
 - **Financeiro**: `venc_de`/`venc_ate` (vencimento de duplicatas)
 - **Ordenação**: `ordenar` (`data`|`valor`), `ordem` (`asc`|`desc`)
 
+### Documentos (DANFE/DACTE/DAMDFE)
+
+| Método | Rota | O que faz |
+|---|---|---|
+| POST | `/danfe` | PDF do DANFE — NF-e, modelo 55 |
+| POST | `/dacte` | PDF do DACTE — CT-e |
+| POST | `/damdfe` | PDF do DAMDFE — MDF-e |
+
+Cada rota aceita o XML autorizado (`nfeProc`/`cteProc`/`mdfeProc`) de duas
+formas — upload multipart (`arquivo`) ou base64 (`xml_base64`, form field):
+
+```bash
+curl -F "arquivo=@nota.xml" localhost:8742/danfe -o danfe.pdf
+
+curl --data-urlencode "xml_base64=$(base64 -w0 nota.xml)" localhost:8742/danfe -o danfe.pdf
+```
+
+DANFE NFC-e (modelo 65, cupom de venda) **não é suportado** — a lib usada
+(`brazilfiscalreport`) não tem essa renderização.
+
 #### Paginação (padrão em toda listagem)
 
 Todo endpoint que lista registros (`/notas`, `/empresas`) usa os mesmos

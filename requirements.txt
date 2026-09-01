@@ -10,4 +10,7 @@ requests>=2.32
 # API
 fastapi>=0.115
 uvicorn[standard]>=0.30
-python-multipart>=0.0.9    # upload do .pfx no cadastro de empresas
+python-multipart>=0.0.9    # upload do .pfx no cadastro de empresas / XML do DANFE
+
+# Documentos auxiliares (DANFE/DACTE/DAMDFE) a partir do XML autorizado
+brazilfiscalreport[dacte,damdfe]>=1.0.2
