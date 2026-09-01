@@ -1,0 +1,44 @@
+tests/conftest.py
+  s_8f63e33b5675f3::t_8a05dbac23b409 1-7
+app/danfe.py
+  s_8f63e33b5675f3::t_50b42af08b3ef5 1-23
+app/api.py
+  s_8f63e33b5675f3::t_df918ce01e6242 74-76,78,80-84,87-103,105-107,109-112,114-116,118-121,123-125,127-129
+  s_8f63e33b5675f3::t_7b37b6942033c6 4-5,15
+  s_8f63e33b5675f3::t_26e0036eeaf8b5 33
+  s_8f63e33b5675f3::t_553fee5832da24 77,79,85-86
+  s_8f63e33b5675f3::t_4dd9f4e9a022ef 104,108,113,117,122,126
+requirements.txt
+  s_8f63e33b5675f3::t_20c62d8163b8e2 13-16
+README.md
+  s_8f63e33b5675f3::t_a50b581cf369a2 142-155,157-161
+  s_8f63e33b5675f3::t_a3be56e47ae4cf 156
+tests/fixtures/mdfe_test_1.xml
+  s_8f63e33b5675f3::t_3ee6d063d11aaf 1-173
+tests/fixtures/nfe_test_1.xml
+  s_8f63e33b5675f3::t_3ee6d063d11aaf 1-156
+requirements-dev.txt
+  s_8f63e33b5675f3::t_306e603e065850 1-4
+tests/fixtures/dacte_test_1.xml
+  s_8f63e33b5675f3::t_3ee6d063d11aaf 1-204
+tests/test_danfe.py
+  s_8f63e33b5675f3::t_3e7d5d9f396edf 1-57
+.gitignore
+  s_8f63e33b5675f3::t_21b1ef6a857ce7 15-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "e6e06700ed632491c5e7b34873f4b671ff594f5e",
+  "prompts": {},
+  "sessions": {
+    "s_8f63e33b5675f3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "255e1d2e-28f6-4a37-a798-f49c5db148ab",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Djalma Araújo <djalma@nossomos.cc>"
+    }
+  }
+}
