@@ -23,6 +23,8 @@ app = FastAPI(
         "do destinatário (ciência 210210) e consulta/download por data de emissão.\n\n"
         "A distribuição da SEFAZ é incremental por NSU; filtros de data agem sobre "
         "o índice local. Sem autenticação — não exponha publicamente sem proteger.\n\n"
+        "Também gera o PDF de DANFE/DACTE/DAMDFE a partir de qualquer XML autorizado "
+        "(upload ou base64) — sem depender de nota já baixada por este serviço.\n\n"
         "Spec OpenAPI: `/openapi.json` · Swagger UI: `/docs` · ReDoc: `/redoc`"
     ),
     openapi_tags=[

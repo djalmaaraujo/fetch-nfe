@@ -12,6 +12,10 @@ Biblioteca: [PyNFe](https://github.com/TadaSoftware/PyNFe). Dados públicos da e
 com fallback automático pra [minha receita](https://minhareceita.org) quando ela
 estiver fora ou rate-limitada.
 
+Também gera o **PDF dos documentos auxiliares** (DANFE, DACTE, DAMDFE) a partir de
+qualquer XML autorizado, via [brazilfiscalreport](https://github.com/Engenere/BrazilFiscalReport)
+— lib isolada, sem relação com a comunicação SEFAZ acima.
+
 Fora do escopo (por ora): auth e UI — **não exponha a API publicamente sem proteger**.
 
 ## Arquitetura
@@ -52,7 +56,8 @@ fetch-nfe/
 │   ├── 2026-08-18/         #   NF-e completas por data de emissão
 │   ├── _resumos/ _eventos/
 ├── state/                 # notas.db (empresas/notas/fila/NSU) + locks — não apagar
-├── app/                   # config, store, empresas, nfe (núcleo), workers, api
+├── app/                   # config, store, empresas, nfe (núcleo), danfe (PDF), workers, api
+├── tests/                 # pytest — fixtures de XML + testes dos endpoints de PDF
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env                   # copiado de .env.example — não versionado
