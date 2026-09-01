@@ -1,0 +1,22 @@
+app/api.py
+  s_8f63e33b5675f3::t_7d168c384995b2 26-27
+README.md
+  s_8f63e33b5675f3::t_932b2bdd61d791 15-18
+  s_8f63e33b5675f3::t_28ee700c1ed2c8 59-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "0ca84e3669a38a9ff59a00c63ff9a13128c2060d",
+  "prompts": {},
+  "sessions": {
+    "s_8f63e33b5675f3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "255e1d2e-28f6-4a37-a798-f49c5db148ab",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Djalma Araújo <djalma@nossomos.cc>"
+    }
+  }
+}
